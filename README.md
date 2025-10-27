@@ -1,42 +1,94 @@
 # ccli_auto
-Reports song usage to CCLI based on a list of song CCLI numbers
 
-## How to Use:
-- rename the file variables_example.py to variables.py
-- edit it with your ccli username, password and a list of all the CCLI songs you want to report
-- install the necessary python dependencies:
-   ````
-    pip install requests selenium
-   ````
-- run the main script:
-  ````
-  python auto_ccli.py
-  ````
+Automate reporting of song usage to CCLI. Drop your report files into the `Reports` folder and run the script—each song is resolved and submitted, with clear, per-song output.
 
-## How it works
-CCLI doesn't have a public API for reporting, nor does it have any other method of authenticating a user to send requests to their servers. So, this script attempts to obtain your authentication cookies by opening a browser session, and observing your login headers.
+## Quick start
 
-Once the token and the authentication cookies are obtained, the script then proceeds to reporting the songs.
+1) Create your config
+- Copy `variables_example.py` to `variables.py`
+- Fill in `ccli_userame` and `ccli_password`
 
-The script will automatically save the cookies and the token into a file, in order to skip login next time you hav to run it.
+2) Install dependencies
+```
+pip install requests selenium
+```
 
-In order to report a song via API call, the server requires the CCLI id, the song id, and the offical song title.
+3) Prepare your input
+- Preferred: Export a FreeShow JSON report and put it in `Reports/`.
+- Alternative: Place an OpenSong `ActivityLog.xml` in `Reports/` (or keep your OpenSong folder configured for the legacy fallback).
 
-The script automatically searches for these parameters for every one of the songs in the list, them submits a single usage report for each item in the list.
+4) Run
+```
+python auto_ccli.py
+```
 
+On first run, a browser window may open so you can complete the login. After that, the script reuses the saved cookies and anti-forgery token.
 
-#### What if i already have the token and cookies?
-If you want to manually obtain the Cookies and token, and not have to use selenium, you can simply edit the main script:
-- Open a Browser session and login to CCLI.
-- Open developer tools and go to the Network tab
-- Then, search for any CCLI song, and report once.
-- On the network tab, look for the POST request to the /api/report endpoint
-- Look for the Request Headers and copy the RequestVerificationToken and Cookie values.
-- Save their raw values into 2 files, on the folder where the script is located, with the following names:
-  ````
-  RequestVerificationToken.txt
-  Cookie.txt
-  ````
+## What the script does
 
-#### If you are doing testing and want to delete all the reports in the last 3 months, execute the delete_all.py script. 
+- Collects CCLI numbers from your input files:
+  - FreeShow JSON (.json)
+  - OpenSong ActivityLog.xml (.xml)
+- For each unique CCLI number:
+  - Uses a local cache when possible
+  - Otherwise searches CCLI for song ID and official title
+  - Prints a verbose line per song (cache/search, title, song_id)
+- Submits a report to CCLI
+- Moves processed input to `Reports/Done/` (handles name collisions safely)
+
+Example console output:
+```
+Attempting to get RequestVerificationToken and Cookie from file.
+RequestVerificationToken and Cookie read from file.
+
+Processing 2025-10-26_11-58.json (43 items)...
+[cache] 798108 - Ancient Of Days - daeca40a-7f82-42c1-bb44-305a5c68a697
+[search] Fetching details for CCLI 2447467...
+[found] 2447467 - Some Title - 123e4567-e89b-12d3-a456-426614174000
+[missing] Could not resolve CCLI 9999999
+
+Reporting the following songs:
+798108 - Ancient Of Days - daeca40a-7f82-42c1-bb44-305a5c68a697
+...
+
+43 songs reported successfully.
+Moved 2025-10-26_11-58.json to Done/
+```
+
+## Cookies and token
+
+CCLI does not provide a public reporting API. The script authenticates via a normal browser login and captures the required cookies and anti-forgery token. These are saved for reuse:
+- `Cookie.txt`
+- `RequestVerificationToken.txt`
+
+The script validates these values and can refresh the token from the server if needed. You can also obtain them manually from your browser dev tools and paste them into the files above.
+
+## Input options
+
+Preferred: place `.json` or `.xml` files in `Reports/` and run the script.
+
+Legacy fallback (optional): you can still report from a list without files.
+- In `variables.py`, define:
+  - `getFromOpenSong = True` and `opensongFolder = r"C:\\Program Files\\OpenSong"`, or
+  - `song_list = ["12345", "67890"]`
+If these variables are absent, the script skips the legacy flow.
+
+## Housekeeping
+
+This repo ignores sensitive and local-only artifacts (see `.gitignore`):
+- `variables.py`, cookies/token files, cache (`song_cache.json`)
+- `Reports/` and processed `Settings/Reported/`
+- logs (`debug.log`, `*.log`), `__pycache__/`, `.vscode/`, virtual envs
+
+## Troubleshooting
+
+- If a console encoding error appears, the script auto-configures robust UTF‑8 printing and also logs diagnostics to `debug.log`.
+- If requests fail with 401/409, the script can refresh tokens and will prompt a new login if necessary.
+
+## Testing/cleanup
+
+For test runs, you can delete reports from the last 3 months:
+```
+python delete_all.py
+```
 

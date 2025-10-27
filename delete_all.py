@@ -12,19 +12,21 @@ def get_history(Cookie):
     # Define the URL
     url = "https://reporting.ccli.com/api/history/" + type + "?lastMonthRange=3"
 
+    cookie_header = Cookie.strip().rstrip(";")
+
     # Define the headers from the raw capture
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
         "Referer": "https://reporting.ccli.com/",
         "Content-Type": "application/json;charset=utf-8",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
         "Te": "trailers",
-        "Cookie": "(" + Cookie + ")",
+        "Cookie": cookie_header,
     }
 
     # Send the GET request
@@ -47,12 +49,14 @@ def delete_report(report_id, Cookie, RequestVerificationToken):
     # Define the URL for the DELETE request
     url = f"https://reporting.ccli.com/api/report/{type}/{report_id}"
 
+    cookie_header = Cookie.strip().rstrip(";")
+
     # Define the headers (assuming the same headers are valid for the DELETE request)
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
         "Referer": "https://reporting.ccli.com/",
         "Content-Type": "application/json;charset=utf-8",
         "RequestVerificationToken": RequestVerificationToken,
@@ -60,7 +64,7 @@ def delete_report(report_id, Cookie, RequestVerificationToken):
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
         "Te": "trailers",
-        "Cookie": "(" + Cookie + ")",
+        "Cookie": cookie_header,
     }
 
     # Send the DELETE request

@@ -3,3 +3,18 @@ __pycache__/
 *.txt
 Cookie.txt
 RequestVerificationToken.txt
+song_cache.json
+
+# Do not publish local reports or archives
+Reports/
+Settings/Reported/
+
+# Logs and editor folders
+debug.log
+*.log
+.vscode/
+
+# Virtual envs and environment files
+.venv/
+.env
+.env.*
