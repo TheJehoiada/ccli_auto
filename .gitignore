@@ -6,7 +6,8 @@ RequestVerificationToken.txt
 song_cache.json
 
 # Do not publish local reports or archives
-Reports/
+Reports/*
+!Reports/.gitkeep
 Settings/Reported/
 
 # Logs and editor folders
