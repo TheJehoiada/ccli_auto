@@ -19,11 +19,18 @@ use_remote_debugger = getattr(variables, "use_remote_debugger", False)
 remote_debugger_address = getattr(
     variables, "remote_debugger_address", "127.0.0.1:9222"
 )
+browser_executable_path = getattr(
+    variables,
+    "browser_executable_path",
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+)
 
 
 def create_chrome_driver():
     options = webdriver.ChromeOptions()
-    # Start Chrome with logging preferences for performance (network events only)
+    # Point Selenium at Brave instead of Chrome
+    options.binary_location = browser_executable_path
+    # Start with logging preferences for performance (network events only)
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     # Reduce Selenium fingerprints
@@ -32,6 +39,18 @@ def create_chrome_driver():
     options.add_argument("--start-maximized")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
+
+    # Disable Brave Shields and privacy features that block authentication cookies
+    options.add_argument("--disable-brave-extension")
+    options.add_argument("--disable-brave-rewards-extension")
+    options.add_argument("--disable-brave-news-extension")
+    options.add_argument("--allow-insecure-localhost")
+    options.add_argument("--no-sandbox")
+    options.add_experimental_option("prefs", {
+        "brave.shields.stats_badge_visible": False,
+        "profile.default_content_setting_values.cookies": 1,  # Allow all cookies
+        "profile.block_third_party_cookies": False,
+    })
 
     if use_remote_debugger:
         options.debugger_address = remote_debugger_address
@@ -64,7 +83,7 @@ required_cookies_dict = {}
 required_cookies = [
     "ARRAffinity",
     "ARRAffinitySameSite",
-    "CCLI_AUTH",
+    "CCLI_NET_AUTH",
     "CCLI_JWT_AUTH",
     ".AspNetCore.Session",
 ]
@@ -101,7 +120,7 @@ def capture_post_requests(logs):
 
             if "RequestVerificationToken" in headers:
                 request_verification_token = headers["RequestVerificationToken"]
-                cookies = driver.get_cookies()
+                cookies = get_all_cookies()
                 if are_cookies_captured(cookies):
                     print("Cookies Captured")
                     required_cookies_dict.update(extract_required_cookies(cookies))
@@ -119,6 +138,21 @@ def are_cookies_captured(cookies):
     ):
         return False
     return True
+
+
+def get_all_cookies():
+    """Fetch cookies from ALL domains using CDP, not just the current page domain.
+
+    driver.get_cookies() only returns cookies for the current domain, which misses
+    cookies set on ccli.com or profile.ccli.com during the login redirect chain.
+    """
+    try:
+        result = driver.execute_cdp_cmd("Network.getAllCookies", {})
+        return result.get("cookies", [])
+    except Exception:
+        # Fallback to standard get_cookies if CDP fails
+        return driver.get_cookies()
+
 
 
 def extract_required_cookies(cookies):
@@ -157,39 +191,104 @@ def handle_cookie_popup():
         pass
 
 
+def missing_cookies_report(cookies):
+    """Return a list of human-readable strings describing which cookies are still missing."""
+    cookie_names = [cookie["name"] for cookie in cookies]
+    missing = []
+    for required_cookie in required_cookies:
+        if required_cookie not in cookie_names:
+            missing.append(required_cookie)
+    if not any(cookie["name"].startswith(antiforgery_cookie_prefix) for cookie in cookies):
+        missing.append(f"{antiforgery_cookie_prefix}.*  (antiforgery)")
+    return missing
+
+
 def collect_cookies(timeout=300, poll_interval=5, manual=False):
-    start_time = time.time()
-    cookies = []
     notice_shown = False
+    round_num = 1
 
-    while time.time() - start_time < timeout:
-        cookies = driver.get_cookies()
-        if are_cookies_captured(cookies):
-            print("All required cookies captured!")
-            return cookies
+    while True:
+        start_time = time.time()
 
-        if manual:
-            if not notice_shown:
-                print(
-                    "Manual mode waiting for login. Please finish signing in, then remain on reporting.ccli.com."
-                )
-                notice_shown = True
+def _wait_for_stop_or_timeout(seconds, missing_desc):
+    """Display a countdown and return True if the user typed 'stop', False if time ran out."""
+    import msvcrt
+    print(f"\nStill missing: {missing_desc}")
+    print("Type 'stop' and press Enter to give up, or do nothing to keep waiting automatically.")
+
+    buffer = ""
+    deadline = time.time() + seconds
+
+    while time.time() < deadline:
+        remaining = int(deadline - time.time())
+        print(f"\r  Auto-continuing in {remaining}s... (type 'stop' + Enter to quit)  ", end="", flush=True)
+
+        if msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            if ch in ("\r", "\n"):
+                print()
+                if buffer.strip().lower() == "stop":
+                    return True
+                buffer = ""
+            elif ch == "\b":
+                buffer = buffer[:-1]
             else:
-                location = driver.current_url
-                if "reporting.ccli.com" not in location:
+                buffer += ch
+
+        time.sleep(0.2)
+
+    print("\r  No input received — continuing to wait...                              ")
+    return False
+
+
+def collect_cookies(timeout=300, poll_interval=5, manual=False):
+    notice_shown = False
+    round_num = 1
+
+    while True:
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            cookies = get_all_cookies()
+            if are_cookies_captured(cookies):
+                print("All required cookies captured!")
+                return cookies
+
+            missing = missing_cookies_report(cookies)
+            elapsed = int(time.time() - start_time)
+            remaining = int(timeout - elapsed)
+
+            if manual:
+                if not notice_shown:
                     print(
-                        "Still waiting for manual login to complete... navigate to https://reporting.ccli.com/search once signed in."
+                        "Manual mode waiting for login. Please finish signing in, then remain on reporting.ccli.com."
                     )
+                    notice_shown = True
                 else:
-                    print("Still waiting for manual login to complete...")
-        else:
-            print("Still waiting for all cookies...")
+                    location = driver.current_url
+                    if "reporting.ccli.com" not in location:
+                        print(
+                            "Still waiting for manual login to complete... navigate to https://reporting.ccli.com/search once signed in."
+                        )
+                    else:
+                        print(f"Still waiting for cookies... ({elapsed}s elapsed, {remaining}s remaining)")
+            else:
+                print(f"Still waiting for cookies... ({elapsed}s elapsed, {remaining}s remaining)")
 
-        time.sleep(poll_interval)
+            print(f"  Missing ({len(missing)}): {', '.join(missing)}")
 
-    print("Timed out waiting for all cookies. Continuing with whatever was captured.")
-    return cookies
+            time.sleep(poll_interval)
 
+        # Timeout reached — give user 30 seconds to type 'stop', otherwise keep going
+        cookies = get_all_cookies()
+        missing = missing_cookies_report(cookies)
+        total_waited = round_num * timeout
+        print(f"\nStill waiting after {total_waited}s.")
+        stopped = _wait_for_stop_or_timeout(30, ', '.join(missing))
+        if stopped:
+            print("Stopping cookie wait. Continuing with whatever was captured.")
+            return cookies
+        round_num += 1
 
 def pause_for_cloudflare_challenge(timeout=240):
     # Allow the user to clear any Cloudflare challenge manually.
@@ -417,7 +516,9 @@ def gui_login():
             )
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"\nLogin error: {e}")
+        print("The script was unable to complete login.")
+        input("Press Enter to close the browser and exit...")
         raise
 
     finally:
