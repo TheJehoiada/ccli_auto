@@ -1,28 +1,37 @@
 # ccli_auto
 
-Automate reporting of song usage to CCLI. Drop your report files into the `Reports` folder and run the script—each song is resolved and submitted, with clear, per-song output.
+Automate reporting of song usage to CCLI. Each song is resolved and submitted, with clear, per-song output.
 
 ## Quick start
 
 1) Create your config
 - Copy `variables_example.py` to `variables.py`
 - Fill in `ccli_userame` and `ccli_password`
+- Fill in the correct folder paths.
+- Update browser location if not using Brave.
 
 2) Install dependencies
 ```
 pip install requests selenium
 ```
 
-3) Prepare your input
-- Preferred: Export a FreeShow JSON report and put it in `Reports/`.
-- Alternative: Place an OpenSong `ActivityLog.xml` in `Reports/` (or keep your OpenSong folder configured for the legacy fallback).
+3) Manual Mode
+- Export FreeShow usage.
+- Run python auto_ccli.py
 
-4) Run
+4) Automatic
 ```
-python auto_ccli.py
+Open Windows Task Scheduler and create a new task, and name it CCLI_Auto_Report
+Set the trigger to a weekly time.
+Set the action to start a program and link it to the ccli_weekly_report.cmd file.
+Have it start in its own folder
+
+When it runs, it will close FreeShow.
+Then it will copy all of the currently logged song usage to the chosen usage folder.
+Then it will run the auto_ccli.py script.
 ```
 
-On first run, a browser window may open so you can complete the login. After that, the script reuses the saved cookies and anti-forgery token.
+On the first run, a browser window may open to complete the login. After that, the script reuses the saved cookies and anti-forgery token.
 
 ## What the script does
 
@@ -52,7 +61,7 @@ Reporting the following songs:
 ...
 
 43 songs reported successfully.
-Moved 2025-10-26_11-58.json to Done/
+Moved 2025-10-26_11-58.json to Reported/
 ```
 
 ## Cookies and token
@@ -63,23 +72,6 @@ CCLI does not provide a public reporting API. The script authenticates via a nor
 
 The script validates these values and can refresh the token from the server if needed. You can also obtain them manually from your browser dev tools and paste them into the files above.
 
-## Input options
-
-Preferred: place `.json` or `.xml` files in `Reports/` and run the script.
-
-Legacy fallback (optional): you can still report from a list without files.
-- In `variables.py`, define:
-  - `getFromOpenSong = True` and `opensongFolder = r"C:\\Program Files\\OpenSong"`, or
-  - `song_list = ["12345", "67890"]`
-If these variables are absent, the script skips the legacy flow.
-
-## Housekeeping
-
-This repo ignores sensitive and local-only artifacts (see `.gitignore`):
-- `variables.py`, cookies/token files, cache (`song_cache.json`)
-- `Reports/` and processed `Settings/Reported/`
-- logs (`debug.log`, `*.log`), `__pycache__/`, `.vscode/`, virtual envs
-
 ## Troubleshooting
 
 - If a console encoding error appears, the script auto-configures robust UTF‑8 printing and also logs diagnostics to `debug.log`.
@@ -87,8 +79,7 @@ This repo ignores sensitive and local-only artifacts (see `.gitignore`):
 
 ## Testing/cleanup
 
-For test runs, you can delete reports from the last 3 months:
+For test runs, you can delete reports for any length of time that you specify using:
 ```
 python delete_all.py
 ```
-
