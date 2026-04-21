@@ -8,6 +8,10 @@ import re
 import shutil
 import datetime
 
+# Ensure the working directory is always this script's folder so that
+# Cookie.txt, RequestVerificationToken.txt, and variables.py are found correctly.
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 import requests
 
 from cookie_extractor import gui_login
@@ -191,8 +195,8 @@ debug_log("startup encodings:\n" + encoding_info())
 
 
 CACHE_FILE = Path("song_cache.json")
-REPORTS_DIR = Path("Reports")
-DONE_DIR = REPORTS_DIR / "Done"
+REPORTS_DIR = Path(getattr(variables, "freeshow_usage_dir", r"C:\Users\Media\AppData\Roaming\freeshow\usage.json"))
+DONE_DIR = Path(__file__).parent / "Reported"
 
 
 def load_song_cache():
@@ -318,6 +322,16 @@ def search(song_ccli, Cookie):
 
 def report(songs_dict, Cookie, RequestVerificationToken):
 
+    # Always fetch a fresh antiforgery token before submitting — the token saved
+    # during login is tied to the browser session and becomes invalid once it closes.
+    from get_cookies_and_token import _try_fetch_token_from_server
+    fresh_token = _try_fetch_token_from_server(Cookie)
+    if fresh_token:
+        debug_log("report: refreshed RequestVerificationToken from server")
+        RequestVerificationToken = fresh_token
+    else:
+        debug_log("report: could not refresh token from server; using saved token")
+
     data = {
         "songs": [],
         "lyrics": {"uses": 1, "digital": 0, "print": 0, "record": 0, "translate": 0},
@@ -378,16 +392,14 @@ def report(songs_dict, Cookie, RequestVerificationToken):
     )
 
     if response_post.status_code == 200:
-
         print("\n" + str(totalNumberOfSongs) + " songs reported successfully.")
         return True
     elif response_post.status_code == 409:
         debug_log(
             "report: 409 conflict; likely bad RequestVerificationToken. Deleting token/cookies."
         )
-
+        print("Report failed: 409 Conflict — RequestVerificationToken was rejected. Saved credentials cleared; will re-login next run.")
         import os
-
         try:
             os.remove("RequestVerificationToken.txt")
             os.remove("Cookie.txt")
@@ -398,9 +410,8 @@ def report(songs_dict, Cookie, RequestVerificationToken):
         debug_log(
             "report: 401 unauthorized; likely bad Cookie. Deleting token/cookies."
         )
-
+        print("Report failed: 401 Unauthorized — session cookie was rejected. Saved credentials cleared; will re-login next run.")
         import os
-
         try:
             os.remove("RequestVerificationToken.txt")
             os.remove("Cookie.txt")
@@ -411,6 +422,7 @@ def report(songs_dict, Cookie, RequestVerificationToken):
         debug_log(
             f"report: error status={response_post.status_code} body={repr(response_post.text[:300])}"
         )
+        print(f"Report failed: {response_post.status_code} — {response_post.text[:200]}")
         return False
 
 
@@ -438,52 +450,6 @@ def refresh_cached_songs(songs_dict, Cookie, song_cache, song_sources):
     return refreshed
 
 
-def getsSongList():
-
-    get_from_opensong = getattr(variables, "getFromOpenSong", False)
-
-    if get_from_opensong:
-        debug_log("getsSongList: reading ccli list from OpenSong ActivityLog.xml")
-        import xml.etree.ElementTree as ET
-
-        # Path to the ActivityLog.xml file
-        opensong_folder = Path(getattr(variables, "opensongFolder", "."))
-        activity_log_path = opensong_folder / "Settings" / "ActivityLog.xml"
-
-        try:
-            # Parse the XML file
-            tree = ET.parse(activity_log_path)
-            root = tree.getroot()
-
-            ccli_items = []
-
-            for entry in root:
-                ccli = entry.find("ccli").text
-                if ccli:
-                    ccli_items.append(ccli)
-
-            debug_log(f"getsSongList: found {len(ccli_items)} ccli entries")
-            return ccli_items
-
-        except Exception as e:
-            debug_log(f"getsSongList: error accessing ActivityLog.xml -> {e}")
-            print(
-                f"Error accessing the file: {e}"
-                + "\n\n\n"
-                + "Please check the path. Maybe you already reported all the songs, or the Activity xml file is not in the correct location."
-            )
-            exit()
-
-    else:
-        song_list = getattr(variables, "song_list", [])
-        if not song_list:
-            debug_log("getsSongList: no fallback song list provided; returning empty")
-            print(
-                "No fallback song list provided. Place a report file in the Reports folder and run again."
-            )
-            return []
-        return song_list
-
 
 # ---------------------- Reports folder processing ----------------------
 def find_report_files():
@@ -491,39 +457,18 @@ def find_report_files():
     if REPORTS_DIR.exists() and REPORTS_DIR.is_dir():
         for p in REPORTS_DIR.iterdir():
             if p.is_dir():
-                # skip Done subfolder
                 continue
-            if p.suffix.lower() in (".xml", ".json"):
+            if p.suffix.lower() == ".json":
                 files.append(p)
     debug_log(f"find_report_files: found {len(files)} files")
     return sorted(files)
 
 
-def parse_opensong_xml(file_path: Path):
-    import xml.etree.ElementTree as ET
-
-    cclis = []
-    try:
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-        for el in root.iter():
-            if el.tag.lower() == "ccli":
-                val = (el.text or "").strip()
-                if val:
-                    cclis.append(val)
-    except Exception as e:
-        debug_log(f"parse_opensong_xml: error reading {file_path} -> {e}")
-    debug_log(f"parse_opensong_xml: {file_path.name} -> {len(cclis)} CCLI items")
-    return cclis
-
-
 def _collect_ccli_from_json(obj, out_set):
-    # Recursively collect any values under keys that look like ccli*
     if isinstance(obj, dict):
         for k, v in obj.items():
             kl = str(k).lower()
             if "ccli" in kl:
-                # extract digits from strings or accept numbers
                 if isinstance(v, (int, float)):
                     out_set.add(str(int(v)))
                 elif isinstance(v, str):
@@ -534,9 +479,6 @@ def _collect_ccli_from_json(obj, out_set):
     elif isinstance(obj, list):
         for item in obj:
             _collect_ccli_from_json(item, out_set)
-    else:
-        # ignore scalars without key context
-        pass
 
 
 def parse_freeshow_json(file_path: Path):
@@ -554,8 +496,6 @@ def parse_freeshow_json(file_path: Path):
 
 
 def extract_ccli_from_file(file_path: Path):
-    if file_path.suffix.lower() == ".xml":
-        return parse_opensong_xml(file_path)
     if file_path.suffix.lower() == ".json":
         return parse_freeshow_json(file_path)
     return []
@@ -570,17 +510,17 @@ def move_to_done(file_path: Path):
             target = DONE_DIR / f"{file_path.stem}_{ts}{file_path.suffix}"
         shutil.move(str(file_path), str(target))
         debug_log(f"move_to_done: moved {file_path.name} -> {target.name}")
-        print(f"Moved {file_path.name} to Done/")
+        print(f"Moved {file_path.name} to Reported/")
     except Exception as e:
         debug_log(f"move_to_done: error moving {file_path} -> {e}")
-        print(f"Warning: could not move {file_path.name} to Done: {e}")
+        print(f"Warning: could not move {file_path.name} to Reported: {e}")
 
 
 def process_report_file(file_path: Path, RequestVerificationToken, Cookie, song_cache):
     debug_log(f"process_report_file: start {file_path}")
     ccli_list = extract_ccli_from_file(file_path)
     if not ccli_list:
-        print(f"No CCLI entries found in {file_path.name}; skipping.")
+        print(f"No CCLI entries found in {file_path.name}; moving to Done.")
         move_to_done(file_path)
         return
 
@@ -631,8 +571,7 @@ def process_report_file(file_path: Path, RequestVerificationToken, Cookie, song_
         )
 
     if not songs_dict:
-        print(f"No songs available to report for {file_path.name}.")
-        move_to_done(file_path)
+        print(f"No songs could be resolved for {file_path.name}. File will not be moved — check your CCLI login and try again.")
         return
 
     # Persist cache updates before report
@@ -660,33 +599,8 @@ def process_report_file(file_path: Path, RequestVerificationToken, Cookie, song_
         print(f"Report did not complete successfully for {file_path.name}.")
 
 
-def cleanupOpenSong():
-
-    activity_log_path = Path(variables.opensongFolder) / "Settings" / "ActivityLog.xml"
-    # rename ActivityLog.xml to ActivityLog<todays date>.xml and move it into the Subfolder "Reported"
-    import shutil
-    import datetime
-    import os
-
-    today = datetime.date.today()
-    new_filename = f"ActivityLog{today}.xml"
-    new_folder = Path(variables.opensongFolder) / "Settings" / "Reported"
-    new_path = new_folder / new_filename
-
-    try:
-        os.makedirs(new_folder, exist_ok=True)
-        shutil.move(activity_log_path, new_path)
-    except Exception as e:
-        debug_log(f"cleanupOpenSong: error moving file -> {e}")
-        print(f"Error moving file: {e}")
-        exit()
-    else:
-        debug_log(f"cleanupOpenSong: moved ActivityLog to {new_path}")
-        print(f"File moved to {new_path}")
-
 
 def main():
-    # If Reports folder has files, process each file individually.
     report_files = find_report_files()
 
     RequestVerificationToken, Cookie = get_cookie_and_token()
@@ -697,111 +611,7 @@ def main():
             process_report_file(f, RequestVerificationToken, Cookie, song_cache)
         return
 
-    # Fallback to previous behavior (Settings/ActivityLog.xml or variables.song_list)
-    song_list = getsSongList()
-
-    songs_dict = {}
-    song_sources = {}
-    processed_cclis = set()
-
-    for song in song_list:
-        ccli_number = str(song).strip()
-        if not ccli_number:
-            continue
-        if ccli_number in processed_cclis:
-            continue
-        processed_cclis.add(ccli_number)
-
-        cached_entry = song_cache.get(ccli_number)
-        if cached_entry and cached_entry.get("song_id") and cached_entry.get("title"):
-            songs_dict[ccli_number] = Song(
-                ccli_number,
-                cached_entry["song_id"],
-                cached_entry["title"],
-            )
-            song_sources[ccli_number] = "cache"
-            continue
-
-        song_details = search(ccli_number, Cookie)
-        if song_details:
-            songs_dict[ccli_number] = song_details
-            song_cache[ccli_number] = {
-                "song_id": song_details.song_id,
-                "title": song_details.title,
-            }
-            song_sources[ccli_number] = "fresh"
-        else:
-            song_sources[ccli_number] = "missing"
-
-    missing_cclis = [key for key, source in song_sources.items() if source == "missing"]
-
-    if songs_dict:
-        save_song_cache(song_cache)
-
-    if missing_cclis:
-        print(
-            "Warning: Unable to find matching songs for the following CCLI numbers: "
-            + ", ".join(missing_cclis)
-        )
-
-    if not songs_dict:
-        print("No songs available to report.")
-        return
-
-    debug_log(
-        f"main: prepared songs -> total={len(songs_dict)} fresh={sum(1 for s in song_sources.values() if s=='fresh')} cache={sum(1 for s in song_sources.values() if s=='cache')} missing={sum(1 for s in song_sources.values() if s=='missing')}"
-    )
-
-    for song in songs_dict.values():
-        try:
-            print(song)
-        except Exception as e:
-            try:
-                song_text = f"{song.ccli_number} - {song.title} - {song.song_id}"
-            except Exception:
-                song_text = repr(song)
-            debug_log(f"main: print(song) failed -> {e} ; text={repr(song_text)}")
-            try:
-                sys.stdout.buffer.write((song_text + "\n").encode("utf-8", "replace"))
-            except Exception as e2:
-                debug_log(f"main: buffer write also failed -> {e2}")
-                raise
-
-    try:
-        success = report(songs_dict, Cookie, RequestVerificationToken)
-    except Exception as e:
-        print(f"Error: {e}")
-        exit()
-    else:
-        if not success:
-            if any(source == "cache" for source in song_sources.values()):
-                print(
-                    "Report failed. Attempting to refresh cached song details and retry."
-                )
-                refreshed = refresh_cached_songs(
-                    songs_dict, Cookie, song_cache, song_sources
-                )
-                if refreshed:
-                    save_song_cache(song_cache)
-                    try:
-                        success = report(songs_dict, Cookie, RequestVerificationToken)
-                    except Exception as e:
-                        debug_log(f"main: error on report retry -> {e}")
-                        print(f"Error on retry: {e}")
-                        exit()
-                if not success:
-                    debug_log(
-                        "main: report did not complete successfully after refresh attempt"
-                    )
-                    print("Report did not complete successfully after refresh attempt.")
-                    return
-            else:
-                debug_log("main: report did not complete successfully")
-                print("Report did not complete successfully.")
-                return
-
-        if variables.getFromOpenSong and success:
-            cleanupOpenSong()
+    print("No report files found in the exports folder. Nothing to report.")
 
 
 if __name__ == "__main__":
