@@ -341,13 +341,11 @@ def report(songs_dict, Cookie, RequestVerificationToken):
     }
 
     for song in songs_dict.values():
-        # Create a dictionary for each song
         song_entry = {
             "id": song.song_id,
             "title": song.title,
             "ccliSongNo": song.ccli_number,
         }
-        # Append the song to the "songs" list in the data
         data["songs"].append(song_entry)
 
     totalNumberOfSongs = len(data["songs"])
@@ -355,68 +353,60 @@ def report(songs_dict, Cookie, RequestVerificationToken):
     first_song = next(iter(songs_dict.values()))
 
     url_report = "https://reporting.ccli.com/api/report"
-    cookie_header = sanitize_header_value("Cookie", Cookie.strip().rstrip(";"))
 
-    headers_post = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-        "RequestVerificationToken": sanitize_header_value(
-            "RequestVerificationToken", RequestVerificationToken
-        ),
-        "Client-Locale": "en-GB",
-        "Origin": "https://reporting.ccli.com",
-        "Referer": "https://reporting.ccli.com/search?s="
-        + first_song.ccli_number
-        + "&page=1&category=all",
-        "Cookie": cookie_header,
-    }
-    debug_log(
-        preview_codepoints("Header Cookie (report)", headers_post.get("Cookie", ""))
-    )
-    debug_log(
-        preview_codepoints(
-            "Header RequestVerificationToken",
-            headers_post.get("RequestVerificationToken", ""),
-        )
-    )
+    def _do_post(cookie, token):
+        cookie_header = sanitize_header_value("Cookie", cookie.strip().rstrip(";"))
+        headers_post = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+            "RequestVerificationToken": sanitize_header_value("RequestVerificationToken", token),
+            "Client-Locale": "en-GB",
+            "Origin": "https://reporting.ccli.com",
+            "Referer": "https://reporting.ccli.com/search?s=" + first_song.ccli_number + "&page=1&category=all",
+            "Cookie": cookie_header,
+        }
+        debug_log(preview_codepoints("Header Cookie (report)", cookie_header))
+        debug_log(preview_codepoints("Header RequestVerificationToken", headers_post.get("RequestVerificationToken", "")))
+        debug_log(f"report: submitting {len(data['songs'])} songs; referer ccli={first_song.ccli_number}")
+        resp = requests.post(url_report, json=data, headers=headers_post)
+        debug_log(f"report: status={resp.status_code} snippet={repr(resp.text[:200])}")
+        return resp
 
-    debug_log(
-        f"report: submitting {len(data['songs'])} songs; referer ccli={first_song.ccli_number}"
-    )
-    response_post = requests.post(url_report, json=data, headers=headers_post)
-    debug_log(
-        f"report: status={response_post.status_code} snippet={repr(response_post.text[:200])}"
-    )
+    response_post = _do_post(Cookie, RequestVerificationToken)
+
+    if response_post.status_code in (401, 409):
+        status = response_post.status_code
+        debug_log(f"report: {status} — clearing saved credentials and re-logging in for immediate retry")
+        print(f"Report failed: {status} — session expired. Logging in again to retry automatically...")
+        import os
+        for f in ("RequestVerificationToken.txt", "Cookie.txt"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        from cookie_extractor import gui_login
+        try:
+            RequestVerificationToken, Cookie = gui_login()
+            fresh = _try_fetch_token_from_server(Cookie)
+            if fresh:
+                RequestVerificationToken = fresh
+            response_post = _do_post(Cookie, RequestVerificationToken)
+            # Save new credentials
+            with open("RequestVerificationToken.txt", "w", encoding="utf-8") as f:
+                f.write(RequestVerificationToken.strip())
+            with open("Cookie.txt", "w", encoding="utf-8") as f:
+                f.write(Cookie.strip())
+        except Exception as e:
+            debug_log(f"report: re-login failed -> {e}")
+            print(f"Re-login failed: {e}")
+            return False
 
     if response_post.status_code == 200:
         print("\n" + str(totalNumberOfSongs) + " songs reported successfully.")
         return True
-    elif response_post.status_code == 409:
-        debug_log(
-            "report: 409 conflict; likely bad RequestVerificationToken. Deleting token/cookies."
-        )
-        print("Report failed: 409 Conflict — RequestVerificationToken was rejected. Saved credentials cleared; will re-login next run.")
-        import os
-        try:
-            os.remove("RequestVerificationToken.txt")
-            os.remove("Cookie.txt")
-        except:
-            pass
-        return False
-    elif response_post.status_code == 401:
-        debug_log(
-            "report: 401 unauthorized; likely bad Cookie. Deleting token/cookies."
-        )
-        print("Report failed: 401 Unauthorized — session cookie was rejected. Saved credentials cleared; will re-login next run.")
-        import os
-        try:
-            os.remove("RequestVerificationToken.txt")
-            os.remove("Cookie.txt")
-        except:
-            pass
         return False
     else:
         debug_log(
