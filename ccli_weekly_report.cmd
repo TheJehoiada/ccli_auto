@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableDelayedExpansion
 REM ------------ Configuration loaded from variables.py ------------
 for /f "delims=" %%i in ('python -c "import variables; print(variables.freeshow_usage_source)"') do set "FREESHOW_USAGE_SOURCE=%%i"
 for /f "delims=" %%i in ('python -c "import variables; print(variables.freeshow_usage_dir)"') do set "FREESHOW_EXPORT_DIR=%%i"
@@ -23,7 +24,7 @@ if "%ERRORLEVEL%"=="0" (
     powershell -NoProfile -Command "Get-Date -Format 'MM-dd-yyyy' | Out-File -FilePath '%TEMP%\ccli_timestamp.txt' -Encoding ascii -NoNewline"
     set /p timestamp=<"%TEMP%\ccli_timestamp.txt"
     powershell -Command "Write-Host 'Song usage found - exporting file.' -ForegroundColor Red"
-    copy "%FREESHOW_USAGE_SOURCE%" "%FREESHOW_EXPORT_DIR%\Usage_%timestamp%.json"
+    copy "%FREESHOW_USAGE_SOURCE%" "%FREESHOW_EXPORT_DIR%\Usage_!timestamp!.json"
     TIMEOUT /T 2
     powershell -Command "Write-Host 'Resetting song usage.' -ForegroundColor Red"
     copy /Y "EmptyUsage.json" "%FREESHOW_USAGE_SOURCE%"
