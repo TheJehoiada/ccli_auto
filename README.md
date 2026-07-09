@@ -82,6 +82,20 @@ The anti-forgery token is refreshed from the server before every report submissi
 
 If the browser login is taking a long time waiting for cookies, the console will show which cookies are still missing every 5 seconds. After 5 minutes it will ask whether to keep waiting — just press Enter to continue waiting, or type `stop` and Enter to give up.
 
+## ChromeDriver management
+The script manages ChromeDriver automatically — no manual installation required. On the first run after a Brave update, it reads the installed Brave version, downloads the matching ChromeDriver from Google's Chrome for Testing repository, and caches it at:
+
+```
+C:\Users\<you>\AppData\Local\brave_ccli_drivers\<major_version>\chromedriver.exe
+```
+
+When Brave updates to a new major Chromium version, the next run detects the change and downloads a new driver automatically. The cache is separate from the script folder so it is unaffected by OneDrive sync.
+
+The script also uses a dedicated browser profile for automation stored at:
+```
+C:\Users\<you>\AppData\Local\brave_ccli_profile\
+```
+
 ## variables.py reference
 | Variable | Description |
 |----------|-------------|
@@ -98,6 +112,8 @@ If the browser login is taking a long time waiting for cookies, the console will
 - If a console encoding error appears, the script auto-configures UTF-8 printing and logs diagnostics to `debug.log`
 - If a report fails with 401 or 409, the script automatically clears saved credentials, re-logs in via the browser, and retries in the same run
 - If the browser opens but CCLI_AUTH never appears, the script will keep checking every 5 seconds and report exactly which cookies are still missing
+- If ChromeDriver fails to download, check your internet connection and try deleting `AppData\Local\brave_ccli_drivers\` so it re-downloads on the next run
+- A `chromedriver.log` file is written next to the script on every browser login attempt; if login fails, this file contains ChromeDriver's detailed session log
 - The `py` command is used instead of `python` in the CMD script to bypass the Windows Store Python alias
 
 ## Deleting test reports
