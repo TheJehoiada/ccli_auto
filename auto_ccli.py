@@ -155,10 +155,12 @@ def safe_print(*args, sep=" ", end="\n", file=None, flush=False):
     if buf is not None:
         try:
             buf.write(data)
+            buf.flush()   # always flush so output appears immediately in the terminal
         except Exception:
             # As a last resort, try the original stdout buffer
             try:
                 sys.__stdout__.buffer.write(data)
+                sys.__stdout__.buffer.flush()
             except Exception:
                 # Fallback to text write; may still fail but we've tried bytes
                 try:
