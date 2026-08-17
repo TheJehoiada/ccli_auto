@@ -155,12 +155,10 @@ def safe_print(*args, sep=" ", end="\n", file=None, flush=False):
     if buf is not None:
         try:
             buf.write(data)
-            buf.flush()   # always flush so output appears immediately in the terminal
         except Exception:
             # As a last resort, try the original stdout buffer
             try:
                 sys.__stdout__.buffer.write(data)
-                sys.__stdout__.buffer.flush()
             except Exception:
                 # Fallback to text write; may still fail but we've tried bytes
                 try:
@@ -324,15 +322,63 @@ def search(song_ccli, Cookie):
 
 def report(songs_dict, Cookie, RequestVerificationToken):
 
-    # Always fetch a fresh antiforgery token before submitting — the token saved
-    # during login is tied to the browser session and becomes invalid once it closes.
-    from get_cookies_and_token import _try_fetch_token_from_server
-    fresh_token = _try_fetch_token_from_server(Cookie)
-    if fresh_token:
-        debug_log("report: refreshed RequestVerificationToken from server")
-        RequestVerificationToken = fresh_token
-    else:
-        debug_log("report: could not refresh token from server; using saved token")
+    # Use a requests.Session() for both the antiforgery GET and the report POST.
+    #
+    # Root cause of the 409: the antiforgery endpoint rotates the
+    # .AspNetCore.Antiforgery.* cookie (via Set-Cookie) each time it is called.
+    # The old code fetched a fresh token but discarded the rotated cookie, then
+    # sent the POST with the OLD cookie + NEW token — a CSRF mismatch that CCLI
+    # returns as 409 with an empty body. Using a Session means the rotated cookie
+    # is automatically carried into the POST, keeping token and cookie paired.
+
+    def _build_session(cookie_string):
+        """Create a requests.Session pre-populated from a Cookie string."""
+        sess = requests.Session()
+        for part in cookie_string.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, _, value = part.partition("=")
+                sess.cookies.set(name.strip(), value.strip())
+        return sess
+
+    def _fetch_token_via_session(sess, first_song_ccli):
+        """GET antiForgery via the session so cookie rotation is captured."""
+        try:
+            resp = sess.get(
+                "https://reporting.ccli.com/api/antiForgery",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate",
+                    "Referer": "https://reporting.ccli.com/",
+                    "Content-Type": "application/json;charset=utf-8",
+                },
+                timeout=20,
+                allow_redirects=False,
+            )
+            debug_log(f"report: antiforgery status={resp.status_code} snippet={repr(resp.text[:80])}")
+            if resp.status_code != 200:
+                return None
+            # Try JSON string (most common format)
+            try:
+                data = resp.json()
+                if isinstance(data, str) and data.strip():
+                    return data.strip()
+                if isinstance(data, dict):
+                    for key in ("requestVerificationToken", "token", "RequestVerificationToken"):
+                        if key in data and isinstance(data[key], str):
+                            return data[key].strip()
+            except Exception:
+                pass
+            # Fallback: quoted text
+            txt = (resp.text or "").strip()
+            if txt.startswith('"') and txt.endswith('"') and len(txt) > 2:
+                return txt[1:-1]
+            return None
+        except Exception as e:
+            debug_log(f"report: antiforgery fetch failed: {e}")
+            return None
 
     data = {
         "songs": [],
@@ -351,29 +397,40 @@ def report(songs_dict, Cookie, RequestVerificationToken):
         data["songs"].append(song_entry)
 
     totalNumberOfSongs = len(data["songs"])
-
     first_song = next(iter(songs_dict.values()))
-
     url_report = "https://reporting.ccli.com/api/report"
 
-    def _do_post(cookie, token):
-        cookie_header = sanitize_header_value("Cookie", cookie.strip().rstrip(";"))
-        headers_post = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-            "Content-Type": "application/json",
-            "RequestVerificationToken": sanitize_header_value("RequestVerificationToken", token),
-            "Client-Locale": "en-GB",
-            "Origin": "https://reporting.ccli.com",
-            "Referer": "https://reporting.ccli.com/search?s=" + first_song.ccli_number + "&page=1&category=all",
-            "Cookie": cookie_header,
-        }
-        debug_log(preview_codepoints("Header Cookie (report)", cookie_header))
-        debug_log(preview_codepoints("Header RequestVerificationToken", headers_post.get("RequestVerificationToken", "")))
+    def _do_post(cookie_string, token):
+        # Build a fresh session for this attempt so cookie rotation is tracked
+        sess = _build_session(cookie_string)
+        fresh = _fetch_token_via_session(sess, first_song.ccli_number)
+        if fresh:
+            token = fresh
+            debug_log("report: refreshed RequestVerificationToken from server via session")
+        else:
+            debug_log("report: could not refresh token; using provided token")
+
+        token_clean = sanitize_header_value("RequestVerificationToken", token)
+        debug_log(preview_codepoints("Header Cookie (report)", "; ".join(f"{c.name}={c.value}" for c in sess.cookies)[:80]))
+        debug_log(preview_codepoints("Header RequestVerificationToken", token_clean))
         debug_log(f"report: submitting {len(data['songs'])} songs; referer ccli={first_song.ccli_number}")
-        resp = requests.post(url_report, json=data, headers=headers_post)
+
+        resp = sess.post(
+            url_report,
+            json=data,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Content-Type": "application/json",
+                "RequestVerificationToken": token_clean,
+                "Client-Locale": "en-GB",
+                "Origin": "https://reporting.ccli.com",
+                "Referer": "https://reporting.ccli.com/search?s=" + first_song.ccli_number + "&page=1&category=all",
+            },
+            timeout=30,
+        )
         debug_log(f"report: status={resp.status_code} snippet={repr(resp.text[:200])}")
         return resp
 
@@ -392,9 +449,6 @@ def report(songs_dict, Cookie, RequestVerificationToken):
         from cookie_extractor import gui_login
         try:
             RequestVerificationToken, Cookie = gui_login()
-            fresh = _try_fetch_token_from_server(Cookie)
-            if fresh:
-                RequestVerificationToken = fresh
             response_post = _do_post(Cookie, RequestVerificationToken)
             # Save new credentials
             with open("RequestVerificationToken.txt", "w", encoding="utf-8") as f:
@@ -409,7 +463,6 @@ def report(songs_dict, Cookie, RequestVerificationToken):
     if response_post.status_code == 200:
         print("\n" + str(totalNumberOfSongs) + " songs reported successfully.")
         return True
-        return False
     else:
         debug_log(
             f"report: error status={response_post.status_code} body={repr(response_post.text[:300])}"
