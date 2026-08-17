@@ -21,7 +21,7 @@ Automate reporting of FreeShow song usage to CCLI. Each song is resolved and sub
 
 2. **Install dependencies**
    ```
-   pip install requests selenium
+   pip install requests selenium selenium-stealth webdriver-manager
    ```
 
 3. **Manual mode**
@@ -49,7 +49,7 @@ On the first run a browser window will open to complete the login. After that th
   - Uses a local cache (`song_cache.json`) when possible
   - Otherwise searches CCLI for the song ID and official title
   - Prints a verbose line per song showing cache/search status, title, and song ID
-- Fetches a fresh anti-forgery token before each submission
+- Fetches a fresh anti-forgery token before each submission using a persistent HTTP session, ensuring the token and its paired cookie are always submitted together
 - Submits the report to CCLI
 - On a 401 or 409 response, automatically re-logs in and retries
 - Moves successfully reported files to `Reported/`
@@ -58,8 +58,16 @@ On the first run a browser window will open to complete the login. After that th
 
 Example console output:
 ```
-Attempting to get RequestVerificationToken and Cookie from file.
-RequestVerificationToken and Cookie read from file.
+Attempting direct HTTP login (no browser)...
+Direct login failed, will try browser login...
+Launching Brave on debugging port 49766...
+Brave Chromium version: 151.0.7922.137
+Using cached ChromeDriver 151.0.7922.138
+ChromeDriver connected.
+Checking for existing CCLI session...
+Waiting for the sign-in spinner to disappear (up to 5 minutes)...
+Spinner resolved.
+All required cookies captured!
 Processing 2026-04-19.json (3 items)...
 [cache] 6016351 - 10,000 Reasons (Bless The Lord) - 1839350d-9dd7-44b3-8ea4-69643e28a1a9
 [search] Fetching details for CCLI 1406918...
@@ -78,23 +86,18 @@ CCLI does not provide a public reporting API. The script authenticates via a nor
 - `Cookie.txt`
 - `RequestVerificationToken.txt`
 
-The anti-forgery token is refreshed from the server before every report submission. If the session has expired the script will open the browser, log in, and retry automatically without any manual steps.
+Before each report submission the script opens a `requests.Session`, fetches a fresh anti-forgery token through that session, and immediately submits the report through the same session. This is important because CCLI's server rotates the anti-forgery cookie on each token request; using the same session ensures the updated cookie and the new token are always submitted together.
 
-If the browser login is taking a long time waiting for cookies, the console will show which cookies are still missing every 5 seconds. After 5 minutes it will ask whether to keep waiting — just press Enter to continue waiting, or type `stop` and Enter to give up.
+If the session has expired the script will open the browser, log in, and retry automatically without any manual steps.
 
-## ChromeDriver management
-The script manages ChromeDriver automatically — no manual installation required. On the first run after a Brave update, it reads the installed Brave version, downloads the matching ChromeDriver from Google's Chrome for Testing repository, and caches it at:
+## How browser login works
+CCLI's login page uses bot detection that prevents automated browsers from enabling the login form. The script works around this without any manual intervention:
 
-```
-C:\Users\<you>\AppData\Local\brave_ccli_drivers\<major_version>\chromedriver.exe
-```
-
-When Brave updates to a new major Chromium version, the next run detects the change and downloads a new driver automatically. The cache is separate from the script folder so it is unaffected by OneDrive sync.
-
-The script also uses a dedicated browser profile for automation stored at:
-```
-C:\Users\<you>\AppData\Local\brave_ccli_profile\
-```
+1. **Direct HTTP login is tried first** — no browser is needed at all if the existing session is still valid.
+2. **If that fails, Brave is launched as a normal subprocess** (not through ChromeDriver). ChromeDriver then *attaches* to the already-running browser rather than launching it, which avoids a crash that occurs when ChromeDriver tries to start Brave itself.
+3. **CCLI is opened in a new browser tab via CDP** (`Target.createTarget`). Because ChromeDriver's automation infrastructure is not active on the new tab when the page loads, CCLI's bot detection sees a clean browser and enables the login form normally.
+4. **ChromeDriver switches to the new tab** (after a brief wait for the page to finish its checks), fills in credentials, and completes login.
+5. **ChromeDriver version is detected automatically** from the running Brave instance and the matching ChromeDriver is downloaded from Google's Chrome for Testing service and cached in `~/.cache/chromedriver_cft/`.
 
 ## variables.py reference
 | Variable | Description |
@@ -111,10 +114,9 @@ C:\Users\<you>\AppData\Local\brave_ccli_profile\
 ## Troubleshooting
 - If a console encoding error appears, the script auto-configures UTF-8 printing and logs diagnostics to `debug.log`
 - If a report fails with 401 or 409, the script automatically clears saved credentials, re-logs in via the browser, and retries in the same run
-- If the browser opens but CCLI_AUTH never appears, the script will keep checking every 5 seconds and report exactly which cookies are still missing
-- If ChromeDriver fails to download, check your internet connection and try deleting `AppData\Local\brave_ccli_drivers\` so it re-downloads on the next run
-- A `chromedriver.log` file is written next to the script on every browser login attempt; if login fails, this file contains ChromeDriver's detailed session log
+- If the browser login takes longer than expected, the console will show which cookies are still missing every 5 seconds. After 5 minutes the script will ask whether to keep waiting — press Enter to continue or type `stop` and Enter to give up
 - The `py` command is used instead of `python` in the CMD script to bypass the Windows Store Python alias
+- ChromeDriver is downloaded automatically to `~/.cache/chromedriver_cft/` and matched to the installed Brave version. If Brave auto-updates and the version no longer matches, delete that folder and the script will download the correct version on the next run
 
 ## Deleting test reports
 To delete past reports from CCLI by a specific date range:
